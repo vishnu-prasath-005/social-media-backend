@@ -1,4 +1,4 @@
-import { ForbiddenException, Logger, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Logger, NotFoundException } from "@nestjs/common";
 import {
   ConnectedSocket,
   MessageBody,
@@ -9,14 +9,14 @@ import {
   WebSocketGateway,
   WebSocketServer,
   WsException,
-} from '@nestjs/websockets';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
-import { Server, Socket } from 'socket.io';
-import { ChatService } from './chat.service';
-import { SendMessageDto } from './dto/send-message.dto';
-import { NotificationsService } from '../notifications/notifications.service';
-import { NotificationType } from '@prisma/client';
+} from "@nestjs/websockets";
+import { ConfigService } from "@nestjs/config";
+import { JwtService } from "@nestjs/jwt";
+import { Server, Socket } from "socket.io";
+import { ChatService } from "./chat.service";
+import { SendMessageDto } from "./dto/send-message.dto";
+import { NotificationsService } from "../notifications/notifications.service";
+import { NotificationType } from "@prisma/client";
 
 interface AuthenticatedSocket extends Socket {
   data: {
@@ -25,8 +25,13 @@ interface AuthenticatedSocket extends Socket {
 }
 
 @WebSocketGateway({
-  namespace: 'chat',
-  cors: { origin: process.env.CORS_ORIGIN ?? 'http://localhost:3000', credentials: true },
+  namespace: "chat",
+  cors: {
+    origin:
+      process.env.CORS_ORIGIN ??
+      "https://social-media-frontend-production-b374.up.railway.app",
+    credentials: true,
+  },
 })
 export class ChatGateway
   implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
@@ -47,7 +52,7 @@ export class ChatGateway
   ) {}
 
   afterInit() {
-    this.logger.log('Chat WebSocket gateway initialized');
+    this.logger.log("Chat WebSocket gateway initialized");
   }
 
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
@@ -56,7 +61,7 @@ export class ChatGateway
     try {
       const token = this.extractToken(client);
       const payload = await this.jwtService.verifyAsync(token, {
-        secret: this.config.getOrThrow<string>('jwt.accessSecret'),
+        secret: this.config.getOrThrow<string>("jwt.accessSecret"),
       });
 
       client.data.userId = payload.sub;
@@ -64,18 +69,20 @@ export class ChatGateway
 
       this.logger.log(`Connected: ${client.id} (user: ${payload.sub})`);
     } catch {
-      client.emit('error', { message: 'Unauthorized' });
+      client.emit("error", { message: "Unauthorized" });
       client.disconnect();
     }
   }
 
   handleDisconnect(client: AuthenticatedSocket) {
-    this.logger.log(`Disconnected: ${client.id} (user: ${client.data?.userId ?? 'unknown'})`);
+    this.logger.log(
+      `Disconnected: ${client.id} (user: ${client.data?.userId ?? "unknown"})`,
+    );
 
     // Clear typing indicator for the thread this socket was in
     const threadId = this.socketActiveThread.get(client.id);
     if (threadId && client.data?.userId) {
-      this.server.to(`thread:${threadId}`).emit('typing:update', {
+      this.server.to(`thread:${threadId}`).emit("typing:update", {
         threadId,
         userId: client.data.userId,
         isTyping: false,
@@ -86,7 +93,7 @@ export class ChatGateway
 
   // ─── Thread rooms ───────────────────────────────────────────────────────────
 
-  @SubscribeMessage('thread:join')
+  @SubscribeMessage("thread:join")
   async handleJoinThread(
     @ConnectedSocket() client: AuthenticatedSocket,
     @MessageBody() threadId: string,
@@ -95,14 +102,14 @@ export class ChatGateway
       threadId,
       client.data.userId,
     );
-    if (!isMember) throw new WsException('Forbidden');
+    if (!isMember) throw new WsException("Forbidden");
 
     client.join(`thread:${threadId}`);
     this.socketActiveThread.set(client.id, threadId);
     return { joined: threadId };
   }
 
-  @SubscribeMessage('thread:leave')
+  @SubscribeMessage("thread:leave")
   handleLeaveThread(
     @ConnectedSocket() client: AuthenticatedSocket,
     @MessageBody() threadId: string,
@@ -116,7 +123,7 @@ export class ChatGateway
 
   // ─── Messaging ──────────────────────────────────────────────────────────────
 
-  @SubscribeMessage('message:send')
+  @SubscribeMessage("message:send")
   async handleMessage(
     @ConnectedSocket() client: AuthenticatedSocket,
     @MessageBody() dto: SendMessageDto,
@@ -134,14 +141,14 @@ export class ChatGateway
     }
 
     // Clear typing on send
-    this.server.to(`thread:${dto.threadId}`).emit('typing:update', {
+    this.server.to(`thread:${dto.threadId}`).emit("typing:update", {
       threadId: dto.threadId,
       userId,
       isTyping: false,
     });
 
     // Path 1: deliver to all clients in the thread room
-    this.server.to(`thread:${dto.threadId}`).emit('message:received', message);
+    this.server.to(`thread:${dto.threadId}`).emit("message:received", message);
 
     // Path 2: deliver to each participant's user room + persist notification
     const participantIds = await this.chatService.getThreadParticipantIds(
@@ -151,7 +158,7 @@ export class ChatGateway
       if (pid !== userId) {
         this.server
           .to(`user:${pid}`)
-          .emit('message:new', { threadId: dto.threadId, message });
+          .emit("message:new", { threadId: dto.threadId, message });
 
         // Persist a notification so it appears in the recipient's notification feed
         this.notificationsService
@@ -171,7 +178,7 @@ export class ChatGateway
 
   // ─── Read receipts ──────────────────────────────────────────────────────────
 
-  @SubscribeMessage('thread:read')
+  @SubscribeMessage("thread:read")
   async handleMarkRead(
     @ConnectedSocket() client: AuthenticatedSocket,
     @MessageBody() threadId: string,
@@ -180,12 +187,12 @@ export class ChatGateway
 
     this.server
       .to(`thread:${threadId}`)
-      .emit('thread:read', { threadId, userId: client.data.userId });
+      .emit("thread:read", { threadId, userId: client.data.userId });
   }
 
   // ─── Emoji reactions ────────────────────────────────────────────────────────
 
-  @SubscribeMessage('reaction:toggle')
+  @SubscribeMessage("reaction:toggle")
   async handleReactionToggle(
     @ConnectedSocket() client: AuthenticatedSocket,
     @MessageBody() { messageId, emoji }: { messageId: string; emoji: string },
@@ -193,13 +200,13 @@ export class ChatGateway
     const userId = client.data.userId;
 
     const msg = await this.chatService.getMessageThread(messageId);
-    if (!msg) throw new WsException('Message not found');
+    if (!msg) throw new WsException("Message not found");
 
     const isMember = await this.chatService.verifyParticipant(
       msg.threadId,
       userId,
     );
-    if (!isMember) throw new WsException('Forbidden');
+    if (!isMember) throw new WsException("Forbidden");
 
     const reactions = await this.chatService.toggleReaction(
       userId,
@@ -207,7 +214,7 @@ export class ChatGateway
       emoji,
     );
 
-    this.server.to(`thread:${msg.threadId}`).emit('reaction:update', {
+    this.server.to(`thread:${msg.threadId}`).emit("reaction:update", {
       messageId,
       threadId: msg.threadId,
       reactions,
@@ -218,25 +225,25 @@ export class ChatGateway
 
   // ─── Typing indicators ──────────────────────────────────────────────────────
 
-  @SubscribeMessage('typing:start')
+  @SubscribeMessage("typing:start")
   handleTypingStart(
     @ConnectedSocket() client: AuthenticatedSocket,
     @MessageBody() threadId: string,
   ) {
     // Broadcast to others in the thread (not back to the sender)
-    client.to(`thread:${threadId}`).emit('typing:update', {
+    client.to(`thread:${threadId}`).emit("typing:update", {
       threadId,
       userId: client.data.userId,
       isTyping: true,
     });
   }
 
-  @SubscribeMessage('typing:stop')
+  @SubscribeMessage("typing:stop")
   handleTypingStop(
     @ConnectedSocket() client: AuthenticatedSocket,
     @MessageBody() threadId: string,
   ) {
-    client.to(`thread:${threadId}`).emit('typing:update', {
+    client.to(`thread:${threadId}`).emit("typing:update", {
       threadId,
       userId: client.data.userId,
       isTyping: false,
@@ -248,8 +255,8 @@ export class ChatGateway
   private extractToken(client: Socket): string {
     const token =
       client.handshake.auth?.token ??
-      client.handshake.headers?.authorization?.replace('Bearer ', '');
-    if (!token) throw new WsException('Missing token');
+      client.handshake.headers?.authorization?.replace("Bearer ", "");
+    if (!token) throw new WsException("Missing token");
     return token;
   }
 }
