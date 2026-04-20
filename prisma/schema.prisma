@@ -1,0 +1,316 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────── ENUMS ───────────────────────────────────────
+
+enum PostType {
+  ORIGINAL
+  REPLY
+  REPOST
+  QUOTE
+}
+
+enum NotificationType {
+  LIKE_POST
+  LIKE_COMMENT
+  COMMENT
+  FOLLOW
+  MENTION
+  REPOST
+  NEW_POST
+  NEW_MESSAGE
+}
+
+// ─────────────────────────────── USERS ───────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique @db.VarChar(30)
+  email        String   @unique @db.VarChar(255)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  displayName  String   @map("display_name") @db.VarChar(50)
+  bio          String?  @db.VarChar(160)
+  avatarUrl    String?  @map("avatar_url")
+  bannerUrl    String?  @map("banner_url")
+  isVerified   Boolean  @default(false) @map("is_verified")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  posts                   Post[]
+  comments                Comment[]
+  postLikes               PostLike[]
+  commentLikes            CommentLike[]
+  followers               Follow[]                 @relation("Following")
+  following               Follow[]                 @relation("Follower")
+  sentMessages            Message[]
+  chatParticipants        ChatParticipant[]
+  messageReactions        MessageReaction[]
+  notificationsReceived   Notification[]           @relation("NotificationRecipient")
+  notificationsTriggered  Notification[]           @relation("NotificationActor")
+  broadcastNotifications  BroadcastNotification[]
+  refreshTokens           RefreshToken[]
+
+  @@index([username])
+  @@map("users")
+}
+
+// ─────────────────────────────── FOLLOWS ─────────────────────────────────────
+
+model Follow {
+  followerId  String   @map("follower_id")
+  followingId String   @map("following_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  follower  User @relation("Follower", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("Following", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@id([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
+  @@map("follows")
+}
+
+// ─────────────────────────────── POSTS ───────────────────────────────────────
+
+model Post {
+  id           String   @id @default(uuid())
+  authorId     String   @map("author_id")
+  content      String   @db.VarChar(280)
+  type         PostType @default(ORIGINAL)
+  parentId     String?  @map("parent_id")
+  repostOfId   String?  @map("repost_of_id")
+  likeCount    Int      @default(0) @map("like_count")
+  commentCount Int      @default(0) @map("comment_count")
+  repostCount  Int      @default(0) @map("repost_count")
+  viewCount    Int      @default(0) @map("view_count")
+  mediaUrls    String[] @default([]) @map("media_urls")
+  isDeleted    Boolean  @default(false) @map("is_deleted")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  author                 User                     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parent                 Post?                    @relation("PostReplies", fields: [parentId], references: [id], onDelete: SetNull)
+  replies                Post[]                   @relation("PostReplies")
+  repostOf               Post?                    @relation("PostReposts", fields: [repostOfId], references: [id], onDelete: SetNull)
+  reposts                Post[]                   @relation("PostReposts")
+  comments               Comment[]
+  likes                  PostLike[]
+  tags                   PostTag[]
+  notifications          Notification[]
+  broadcastNotifications BroadcastNotification[]
+
+  @@index([authorId, createdAt(sort: Desc)])
+  @@index([parentId])
+  @@index([repostOfId])
+  @@index([createdAt(sort: Desc)])
+  @@index([type, isDeleted, createdAt(sort: Desc)])
+  @@map("posts")
+}
+
+// ─────────────────────────────── COMMENTS ────────────────────────────────────
+
+model Comment {
+  id        String   @id @default(uuid())
+  postId    String   @map("post_id")
+  authorId  String   @map("author_id")
+  parentId  String?  @map("parent_id")
+  content   String   @db.VarChar(280)
+  likeCount Int      @default(0) @map("like_count")
+  isDeleted Boolean  @default(false) @map("is_deleted")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  post          Post           @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author        User           @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parent        Comment?       @relation("CommentReplies", fields: [parentId], references: [id], onDelete: SetNull)
+  replies       Comment[]      @relation("CommentReplies")
+  likes         CommentLike[]
+  notifications Notification[]
+
+  @@index([postId, createdAt(sort: Desc)])
+  @@index([authorId])
+  @@index([parentId])
+  @@map("comments")
+}
+
+// ─────────────────────────────── LIKES ───────────────────────────────────────
+
+model PostLike {
+  userId    String   @map("user_id")
+  postId    String   @map("post_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@id([userId, postId])
+  @@index([postId])
+  @@map("post_likes")
+}
+
+model CommentLike {
+  userId    String   @map("user_id")
+  commentId String   @map("comment_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  comment Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@id([userId, commentId])
+  @@index([commentId])
+  @@map("comment_likes")
+}
+
+// ─────────────────────────────── TAGS ────────────────────────────────────────
+
+model Tag {
+  id        String   @id @default(uuid())
+  name      String   @unique @db.VarChar(100)
+  postCount Int      @default(0) @map("post_count")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  posts PostTag[]
+
+  @@index([name])
+  @@index([postCount(sort: Desc)])
+  @@map("tags")
+}
+
+model PostTag {
+  postId    String   @map("post_id")
+  tagId     String   @map("tag_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([postId, tagId])
+  @@index([tagId])
+  @@map("post_tags")
+}
+
+// ──────────────────────────── CHAT / MESSAGES ────────────────────────────────
+
+model ChatThread {
+  id        String   @id @default(uuid())
+  isGroup   Boolean  @default(false) @map("is_group")
+  name      String?  @db.VarChar(100)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  participants ChatParticipant[]
+  messages     Message[]
+
+  @@map("chat_threads")
+}
+
+model ChatParticipant {
+  threadId   String    @map("thread_id")
+  userId     String    @map("user_id")
+  joinedAt   DateTime  @default(now()) @map("joined_at")
+  lastReadAt DateTime? @map("last_read_at")
+
+  thread ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  user   User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([threadId, userId])
+  @@index([userId])
+  @@map("chat_participants")
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  threadId  String   @map("thread_id")
+  senderId  String   @map("sender_id")
+  content   String   @db.VarChar(2000)
+  isDeleted Boolean  @default(false) @map("is_deleted")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  thread    ChatThread        @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  sender    User              @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  reactions MessageReaction[]
+
+  @@index([threadId, createdAt(sort: Desc)])
+  @@index([senderId])
+  @@map("messages")
+}
+
+model MessageReaction {
+  id        String   @id @default(uuid())
+  messageId String   @map("message_id")
+  userId    String   @map("user_id")
+  emoji     String   @db.VarChar(10)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+  @@map("message_reactions")
+}
+
+// ─────────────────────────── NOTIFICATIONS ───────────────────────────────────
+
+model Notification {
+  id          String           @id @default(uuid())
+  recipientId String           @map("recipient_id")
+  actorId     String           @map("actor_id")
+  type        NotificationType
+  postId      String?          @map("post_id")
+  commentId   String?          @map("comment_id")
+  isRead      Boolean          @default(false) @map("is_read")
+  createdAt   DateTime         @default(now()) @map("created_at")
+
+  recipient User     @relation("NotificationRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  actor     User     @relation("NotificationActor", fields: [actorId], references: [id], onDelete: Cascade)
+  post      Post?    @relation(fields: [postId], references: [id], onDelete: SetNull)
+  comment   Comment? @relation(fields: [commentId], references: [id], onDelete: SetNull)
+
+  @@index([recipientId, isRead, createdAt(sort: Desc)])
+  @@index([actorId])
+  @@map("notifications")
+}
+
+// ──────────────────────── BROADCAST NOTIFICATIONS ────────────────────────────
+//
+// One row per new-post event. Not per-user — fan-out-on-write to all users
+// is not scalable. Real-time delivery is via WebSocket broadcast room;
+// this table is the fallback for clients that were offline.
+
+model BroadcastNotification {
+  id        String           @id @default(uuid())
+  actorId   String           @map("actor_id")
+  postId    String           @map("post_id")
+  type      NotificationType @default(NEW_POST)
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  actor User @relation(fields: [actorId], references: [id], onDelete: Cascade)
+  post  Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt(sort: Desc)])
+  @@map("broadcast_notifications")
+}
+
+// ─────────────────────────── REFRESH TOKENS ──────────────────────────────────
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash") @db.VarChar(255)
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
