@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { IoAdapter } from '@nestjs/platform-socket.io';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { join } from 'path';
 import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
@@ -42,6 +43,18 @@ async function bootstrap() {
 
   // Serve uploaded media files at /uploads/<filename>
   app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads' });
+
+  const swaggerConfig = new DocumentBuilder()
+    .setTitle('Duckgoose API')
+    .setDescription('REST API documentation for the Duckgoose social platform.')
+    .setVersion('1.0')
+    .addBearerAuth()
+    .build();
+  const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);
+  SwaggerModule.setup('docs', app, swaggerDocument, {
+    useGlobalPrefix: true,
+    jsonDocumentUrl: 'docs-json',
+  });
 
   await app.listen(port);
   console.log(`Parallel API running on http://localhost:${port}/${prefix}`);

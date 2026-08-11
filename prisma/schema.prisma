@@ -4,7 +4,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = "postgresql://neondb_owner:npg_2DB3IfPkLpZE@ep-still-frost-amx89rxw-pooler.c-5.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 }
 
 // ─────────────────────────────── ENUMS ───────────────────────────────────────
@@ -56,6 +55,7 @@ model User {
   notificationsTriggered  Notification[]           @relation("NotificationActor")
   broadcastNotifications  BroadcastNotification[]
   refreshTokens           RefreshToken[]
+  passwordResetOtps       PasswordResetOtp[]
 
   @@index([username])
   @@map("users")
@@ -313,4 +313,22 @@ model RefreshToken {
 
   @@index([userId])
   @@map("refresh_tokens")
+}
+
+// ─────────────────────── PASSWORD RESET OTPs ────────────────────────────────
+
+model PasswordResetOtp {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  codeHash  String   @map("code_hash") @db.VarChar(255)
+  expiresAt DateTime @map("expires_at")
+  attempts  Int      @default(0)
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([expiresAt])
+  @@map("password_reset_otps")
 }

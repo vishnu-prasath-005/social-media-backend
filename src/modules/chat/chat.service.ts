@@ -248,6 +248,9 @@ export class ChatService {
   }
 
   async markRead(threadId: string, userId: string): Promise<void> {
+    if (!(await this.verifyParticipant(threadId, userId))) {
+      throw new ForbiddenException('Not a participant of this thread');
+    }
     await this.prisma.chatParticipant.updateMany({
       where: { threadId, userId },
       data: { lastReadAt: new Date() },

@@ -14,12 +14,12 @@ import {
 export class SearchService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async search(dto: SearchQueryDto): Promise<SearchResponse> {
+  async search(dto: SearchQueryDto, viewerId?: string): Promise<SearchResponse> {
     const type = dto.type ?? SearchType.ALL;
 
     const [posts, users, tags] = await Promise.all([
       type === SearchType.POSTS || type === SearchType.ALL
-        ? this.searchPosts(dto)
+        ? this.searchPosts(dto, viewerId)
         : Promise.resolve<SearchPostResult[]>([]),
       type === SearchType.USERS || type === SearchType.ALL
         ? this.searchUsers(dto)
@@ -34,7 +34,7 @@ export class SearchService {
 
   // ─── Dedicated search methods (also used by dedicated controller endpoints) ──
 
-  async searchPosts(dto: SearchQueryDto): Promise<SearchPostResult[]> {
+  async searchPosts(dto: SearchQueryDto, viewerId?: string): Promise<SearchPostResult[]> {
     const q = dto.q?.trim() ?? '';
     const limit = dto.limit ?? 20;
     const offset = dto.offset ?? 0;
@@ -61,6 +61,9 @@ export class SearchService {
           p.like_count                                                   AS "likeCount",
           p.comment_count                                                AS "commentCount",
           p.repost_count                                                 AS "repostCount",
+          p.media_urls                                                   AS "mediaUrls",
+          COALESCE(ARRAY(SELECT tg.name FROM post_tags pt JOIN tags tg ON tg.id = pt.tag_id WHERE pt.post_id = p.id), ARRAY[]::text[]) AS tags,
+          EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.id AND pl.user_id = ${viewerId ?? ''}) AS "isLiked",
           p.created_at                                                   AS "createdAt",
           ts_rank(to_tsvector('english', p.content), tsq.v)             AS rank,
           json_build_object(
@@ -90,6 +93,9 @@ export class SearchService {
         p.like_count  AS "likeCount",
         p.comment_count AS "commentCount",
         p.repost_count  AS "repostCount",
+        p.media_urls    AS "mediaUrls",
+        COALESCE(ARRAY(SELECT tg.name FROM post_tags pt JOIN tags tg ON tg.id = pt.tag_id WHERE pt.post_id = p.id), ARRAY[]::text[]) AS tags,
+        EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.id AND pl.user_id = ${viewerId ?? ''}) AS "isLiked",
         p.created_at    AS "createdAt",
         NULL::float     AS rank,
         json_build_object(

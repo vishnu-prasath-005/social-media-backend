@@ -15,7 +15,9 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
       context.getClass(),
     ]);
 
-    if (isPublic) return true;
+    // Public endpoints remain anonymous-friendly, but authenticate a supplied
+    // bearer token so they can expose viewer-specific state (e.g. isLiked).
+    if (isPublic && !context.switchToHttp().getRequest().headers.authorization) return true;
 
     return super.canActivate(context);
   }

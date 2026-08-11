@@ -13,6 +13,9 @@ export interface SearchPostResult {
   likeCount: number;
   commentCount: number;
   repostCount: number;
+  mediaUrls: string[];
+  tags: string[];
+  isLiked: boolean;
   createdAt: Date;
   rank: number | null;
   author: SearchAuthor;

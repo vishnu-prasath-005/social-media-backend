@@ -27,11 +27,21 @@ export class FollowsService {
       where: { followerId_followingId: { followerId, followingId } },
     });
     if (existing) throw new ConflictException('Already following this user');
-    await this.prisma.follow.create({ data: { followerId, followingId } });
+    const relationship = await this.prisma.$transaction(async (tx) => {
+      const target = await tx.user.findUnique({
+        where: { id: followingId },
+        select: { id: true, _count: { select: { followers: true, following: true, posts: { where: { isDeleted: false } } } } },
+      });
+      if (!target) throw new NotFoundException('User not found');
+      await tx.follow.create({ data: { followerId, followingId } });
+      target._count.followers += 1;
+      return target;
+    });
 
     this.notifications
       .notifyInteraction({ actorId: followerId, recipientId: followingId, type: NotificationType.FOLLOW })
       .catch(() => {});
+    return this.relationshipResponse(relationship, true, await this.isFollowing(followingId, followerId));
   }
 
   async unfollow(followerId: string, followingId: string) {
@@ -42,6 +52,12 @@ export class FollowsService {
     await this.prisma.follow.delete({
       where: { followerId_followingId: { followerId, followingId } },
     });
+    const target = await this.prisma.user.findUnique({
+      where: { id: followingId },
+      select: { id: true, _count: { select: { followers: true, following: true, posts: { where: { isDeleted: false } } } } },
+    });
+    if (!target) throw new NotFoundException('User not found');
+    return this.relationshipResponse(target, false, await this.isFollowing(followingId, followerId));
   }
 
   async getFollowers(userId: string, cursor?: string, rawLimit: number = 20) {
@@ -93,5 +109,16 @@ export class FollowsService {
       where: { followerId_followingId: { followerId, followingId } },
     });
     return !!row;
+  }
+
+  private relationshipResponse(target: any, isFollowing: boolean, isFollowedBy: boolean) {
+    return {
+      userId: target.id,
+      isFollowing,
+      isFollowedBy,
+      followerCount: target._count.followers,
+      followingCount: target._count.following,
+      postCount: target._count.posts,
+    };
   }
 }

@@ -6,6 +6,7 @@ import {
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { extname, join } from 'path';
@@ -18,9 +19,15 @@ const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 
 const UPLOADS_DIR = join(process.cwd(), 'uploads');
 
+@ApiTags('Media')
+@ApiBearerAuth()
 @Controller('media')
 export class MediaController {
   @Post('upload')
+  @ApiOperation({ summary: 'Upload an image or video for a post or profile' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ schema: { type: 'object', required: ['file'], properties: { file: { type: 'string', format: 'binary', description: 'JPEG, PNG, GIF, WebP, MP4, WebM, or QuickTime; max 10 MB' } } } })
+  @ApiResponse({ status: 201, description: 'Stored media URL returned.' })
   @UseInterceptors(
     FileInterceptor('file', {
       storage: diskStorage({

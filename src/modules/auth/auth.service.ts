@@ -7,15 +7,28 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { JwtPayload } from '../../common/types/jwt-payload.type';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { AuthResponse, AuthTokens, AuthUser } from './types/auth-response.type';
+import { MailService } from '../mail/mail.service';
 
 const BCRYPT_ROUNDS = 12;
+const OTP_EXPIRY_MS = 10 * 60 * 1000;
+const MAX_OTP_ATTEMPTS = 5;
+
+interface PasswordResetOtpRow {
+  id: string;
+  codeHash: string;
+  expiresAt: Date;
+  attempts: number;
+}
 
 // Fields returned to the client — never includes passwordHash
 const USER_SELECT = {
@@ -34,6 +47,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
+    private readonly mail: MailService,
   ) {}
 
   // ─── Public Methods ──────────────────────────────────────────────────────────
@@ -73,13 +87,84 @@ export class AuthService {
     const DUMMY_HASH = '$2b$12$KIXnHKonRyIy5IFKP7cQNu5ol5CK5y3QrZO6h1B1UG3qGaS5TeLiO';
     const passwordMatch = await bcrypt.compare(dto.password, user?.passwordHash ?? DUMMY_HASH);
 
-    if (!user || !user.isActive || !passwordMatch) {
+    if (!user || !passwordMatch) {
       throw new UnauthorizedException('Invalid email or password');
+    }
+
+    // A previously deactivated account is restored when its owner proves
+    // ownership by signing in with the correct password.
+    if (!user.isActive) {
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { isActive: true },
+      });
     }
 
     const { passwordHash: _, isActive: __, ...safeUser } = user;
     const tokens = await this.issueAndPersistTokens(user.id, user.username);
     return { user: safeUser as AuthUser, ...tokens };
+  }
+
+  async requestPasswordReset(dto: ForgotPasswordDto): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { email: dto.email },
+      select: { id: true, email: true, isActive: true },
+    });
+
+    // Always return success so this endpoint cannot reveal whether an email exists.
+    if (!user || !user.isActive) return;
+
+    const otp = crypto.randomInt(100000, 1000000).toString();
+    await this.deletePasswordResetOtps(user.id);
+    await this.prisma.$executeRaw(Prisma.sql`
+      INSERT INTO password_reset_otps (id, user_id, code_hash, expires_at)
+      VALUES (${crypto.randomUUID()}, ${user.id}, ${this.hashOtp(otp)}, ${new Date(Date.now() + OTP_EXPIRY_MS)})
+    `);
+
+    try {
+      await this.mail.sendPasswordResetOtp(user.email, otp);
+    } catch (error) {
+      await this.deletePasswordResetOtps(user.id);
+      throw error;
+    }
+  }
+
+  async resetPassword(dto: ResetPasswordDto): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { email: dto.email },
+      select: { id: true, isActive: true },
+    });
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('Invalid or expired password reset code');
+    }
+
+    const resets = await this.prisma.$queryRaw<PasswordResetOtpRow[]>(Prisma.sql`
+      SELECT id, code_hash AS "codeHash", expires_at AS "expiresAt", attempts
+      FROM password_reset_otps
+      WHERE user_id = ${user.id} AND used_at IS NULL
+      ORDER BY created_at DESC
+      LIMIT 1
+    `);
+    const reset = resets[0];
+    if (!reset || reset.expiresAt < new Date() || reset.attempts >= MAX_OTP_ATTEMPTS) {
+      throw new UnauthorizedException('Invalid or expired password reset code');
+    }
+
+    if (this.hashOtp(dto.otp) !== reset.codeHash) {
+      await this.prisma.$executeRaw(Prisma.sql`
+        UPDATE password_reset_otps SET attempts = attempts + 1 WHERE id = ${reset.id}
+      `);
+      throw new UnauthorizedException('Invalid or expired password reset code');
+    }
+
+    const passwordHash = await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS);
+    await this.prisma.$transaction([
+      this.prisma.user.update({ where: { id: user.id }, data: { passwordHash } }),
+      this.prisma.$executeRaw(Prisma.sql`
+        UPDATE password_reset_otps SET used_at = ${new Date()} WHERE id = ${reset.id}
+      `),
+      this.prisma.refreshToken.deleteMany({ where: { userId: user.id } }),
+    ]);
   }
 
   async refreshTokens(userId: string, rawRefreshToken: string): Promise<AuthTokens> {
@@ -130,6 +215,45 @@ export class AuthService {
     return user;
   }
 
+  async getAccountInformation(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        username: true,
+        email: true,
+        displayName: true,
+        bio: true,
+        avatarUrl: true,
+        bannerUrl: true,
+        isVerified: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    return { ...user, accountStatus: user.isActive ? 'active' : 'deactivated' };
+  }
+
+  async changePassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { passwordHash: true },
+    });
+    if (!user || !(await bcrypt.compare(currentPassword, user.passwordHash))) {
+      throw new UnauthorizedException('Current password is incorrect');
+    }
+    if (currentPassword === newPassword) {
+      throw new ConflictException('New password must be different from current password');
+    }
+    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+    await this.prisma.$transaction([
+      this.prisma.user.update({ where: { id: userId }, data: { passwordHash } }),
+      this.prisma.refreshToken.deleteMany({ where: { userId } }),
+    ]);
+  }
+
   // ─── Private Helpers ─────────────────────────────────────────────────────────
 
   private async issueAndPersistTokens(userId: string, username: string): Promise<AuthTokens> {
@@ -162,6 +286,17 @@ export class AuthService {
 
   private sha256(value: string): string {
     return crypto.createHash('sha256').update(value).digest('hex');
+  }
+
+  private hashOtp(otp: string): string {
+    const secret = this.config.getOrThrow<string>('jwt.accessSecret');
+    return crypto.createHmac('sha256', secret).update(otp).digest('hex');
+  }
+
+  private deletePasswordResetOtps(userId: string): Promise<number> {
+    return this.prisma.$executeRaw(
+      Prisma.sql`DELETE FROM password_reset_otps WHERE user_id = ${userId}`,
+    );
   }
 
   private parseDuration(duration: string): Date {
